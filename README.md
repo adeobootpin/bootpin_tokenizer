@@ -1,2 +1,2 @@
 # bootpin_tokenizer
-c++ tokenizer
+BPE tokenizer in C++
