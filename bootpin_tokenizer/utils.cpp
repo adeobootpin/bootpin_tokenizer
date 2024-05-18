@@ -12,209 +12,222 @@
 #include <clocale>
 #include <thread>
 
-#include "bootpin_tokenizer.h"
+#include "utils.h"
 
-void* BlockRealloc(void* current_block_ptr, uint64_t current_size, uint64_t new_size)
-{
-	unsigned char* reallocated_block_ptr;
+using namespace bootpin_tokenizer;
 
-	reallocated_block_ptr = new unsigned char[new_size];
+namespace bootpin_tokenizer {
 
-	memcpy(reallocated_block_ptr, current_block_ptr, current_size);
+	static void* BlockRealloc(void* current_block_ptr, uint64_t current_size, uint64_t new_size)
+	{
+		unsigned char* reallocated_block_ptr;
 
-	delete current_block_ptr;
+		reallocated_block_ptr = new unsigned char[new_size];
 
-	return reallocated_block_ptr;
-}
+		memcpy(reallocated_block_ptr, current_block_ptr, current_size);
 
-int64_t GetFileSize(FILE* stream)
-{
-	int64_t size;
+		delete current_block_ptr;
+
+		return reallocated_block_ptr;
+	}
+
+	int64_t GetFileSize(FILE* stream)
+	{
+		int64_t size;
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
-	_fseeki64(stream, 0, SEEK_END);
-	size = _ftelli64(stream);
+		_fseeki64(stream, 0, SEEK_END);
+		size = _ftelli64(stream);
 #else
-	fseek(stream, 0, SEEK_END);
-	size = ftell(stream);
+		fseek(stream, 0, SEEK_END);
+		size = ftell(stream);
 #endif
 
-	fseek(stream, 0, SEEK_SET);
+		fseek(stream, 0, SEEK_SET);
 
-	return size;
-}
+		return size;
+	}
 
 
-int ReadDataFromUTF8File(const char* file_name, void** pp_data, size_t* data_size)
-{
-	int ret;
-	FILE* stream;
-	size_t bytes;
-	size_t bytes_read;
-	size_t file_size;
-	unsigned char* char_data;
+	int ReadDataFromUTF8File(const char* file_name, void** pp_data, size_t* data_size)
+	{
+		int ret;
+		FILE* stream;
+		size_t bytes;
+		size_t bytes_read;
+		size_t file_size;
+		unsigned char* char_data;
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
-	errno_t err;
-	err = fopen_s(&stream, file_name, "rb");
-	if (err)
-	{
-		ret = -1;
-		goto Exit;
-	}
+		errno_t err;
+		err = fopen_s(&stream, file_name, "rb");
+		if (err)
+		{
+			ret = -1;
+			goto Exit;
+		}
 #else
-	stream = fopen(file_name, "rb");
-	if (!stream)
-	{
-		ret = -1;
-		goto Exit;
-	}
+		stream = fopen(file_name, "rb");
+		if (!stream)
+		{
+			ret = -1;
+			goto Exit;
+		}
 #endif
-	file_size = GetFileSize(stream);
-	char_data = new unsigned char[file_size + 2]; // add space for double null terminators
-	char_data[file_size] = '\0';
-	char_data[file_size + 1] = '\0';
+		file_size = GetFileSize(stream);
+		char_data = new unsigned char[file_size + 2]; // add space for double null terminators
+		char_data[file_size] = '\0';
+		char_data[file_size + 1] = '\0';
 
-	if (!char_data)
-	{
-		assert(0);
-		ret = -1;
-		goto Exit;
+		if (!char_data)
+		{
+			assert(0);
+			ret = -1;
+			goto Exit;
+		}
+
+		*pp_data = static_cast<void*>(char_data);
+
+		bytes_read = 0;
+
+		while (bytes_read < file_size)
+		{
+			bytes = fread(char_data, 1, file_size, stream);
+			bytes_read += bytes;
+			char_data += bytes;
+		}
+
+		fclose(stream);
+
+		char_data = static_cast<unsigned char*>(*pp_data);
+
+		if (char_data[0] == 0xef && // strip out byte-order mark if it exists
+			char_data[1] == 0xbb &&
+			char_data[2] == 0xbf)
+		{
+			bytes_read -= 3;
+			memmove(char_data, &char_data[3], bytes_read + 2); // +2 to copy the double null terminators
+		}
+
+		*data_size = bytes_read;
+
+
+		ret = 0;
+
+	Exit:
+		return ret;
+
 	}
 
-	*pp_data = static_cast<void*>(char_data);
-
-	bytes_read = 0;
-
-	while (bytes_read < file_size)
+	int ReadDataFromFile(const char* file_name, void** pp_data, size_t* data_size)
 	{
-		bytes = fread(char_data, 1, file_size, stream);
-		bytes_read += bytes;
-		char_data += bytes;
-	}
-
-	fclose(stream);
-
-	char_data = static_cast<unsigned char*>(*pp_data);
-
-	if (char_data[0] == 0xef && // strip out byte-order mark if it exists
-		char_data[1] == 0xbb &&
-		char_data[2] == 0xbf)
-	{
-		bytes_read -= 3;
-		memmove(char_data, &char_data[3], bytes_read + 2); // +2 to copy the double null terminators
-	}
-
-	*data_size = bytes_read;
-
-
-	ret = 0;
-
-Exit:
-	return ret;
-
-}
-
-int ReadDataFromFile(const char* file_name, void** pp_data, size_t* data_size)
-{
-	int ret;
-	FILE* stream;
-	size_t bytes;
-	size_t bytes_read;
-	size_t file_size;
-	char* char_data;
+		int ret;
+		FILE* stream;
+		size_t bytes;
+		size_t bytes_read;
+		size_t file_size;
+		char* char_data;
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
-	errno_t err;
-	err = fopen_s(&stream, file_name, "rb");
-	if (err)
-	{
-		ret = -1;
-		goto Exit;
-	}
+		errno_t err;
+		err = fopen_s(&stream, file_name, "rb");
+		if (err)
+		{
+			ret = -1;
+			goto Exit;
+		}
 #else
-	stream = fopen(file_name, "rb");
-	if (!stream)
-	{
-		ret = -1;
-		goto Exit;
-	}
+		stream = fopen(file_name, "rb");
+		if (!stream)
+		{
+			ret = -1;
+			goto Exit;
+		}
 #endif
-	file_size = GetFileSize(stream);
-	char_data = new char[file_size];
-	if (!char_data)
-	{
-		assert(0);
-		ret = -1;
-		goto Exit;
+		file_size = GetFileSize(stream);
+		char_data = new char[file_size];
+		if (!char_data)
+		{
+			assert(0);
+			ret = -1;
+			goto Exit;
+		}
+
+		*pp_data = static_cast<void*>(char_data);
+
+		bytes_read = 0;
+
+		while (bytes_read < file_size)
+		{
+			bytes = fread(char_data, 1, file_size, stream);
+			bytes_read += bytes;
+			char_data += bytes;
+		}
+
+		*data_size = bytes_read;
+
+		fclose(stream);
+
+		ret = 0;
+
+	Exit:
+		return ret;
+
 	}
 
-	*pp_data = static_cast<void*>(char_data);
-
-	bytes_read = 0;
-
-	while (bytes_read < file_size)
+	int WriteDataToFile(const char* file_name, void* data, size_t data_size)
 	{
-		bytes = fread(char_data, 1, file_size, stream);
-		bytes_read += bytes;
-		char_data += bytes;
-	}
-
-	*data_size = bytes_read;
-
-	fclose(stream);
-
-	ret = 0;
-
-Exit:
-	return ret;
-
-}
-
-int WriteDataToFile(const char* file_name, void* data, size_t data_size)
-{
-	int ret;
-	FILE* stream;
-	size_t bytes;
-	size_t bytes_written;
-	char* char_data;
+		int ret;
+		FILE* stream;
+		size_t bytes;
+		size_t bytes_written;
+		char* char_data;
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
-	errno_t err;
-	err = fopen_s(&stream, file_name, "wb");
-	if (err)
-	{
-		ret = -1;
-		goto Exit;
-	}
+		errno_t err;
+		err = fopen_s(&stream, file_name, "wb");
+		if (err)
+		{
+			ret = -1;
+			goto Exit;
+		}
 #else
-	stream = fopen(file_name, "wb");
-	if (!stream)
-	{
-		ret = -1;
-		goto Exit;
-	}
+		stream = fopen(file_name, "wb");
+		if (!stream)
+		{
+			ret = -1;
+			goto Exit;
+		}
 #endif
-	bytes_written = 0;
-	char_data = (char*)data;
+		bytes_written = 0;
+		char_data = (char*)data;
 
-	while (bytes_written < data_size)
-	{
-		bytes = fwrite(char_data, sizeof(char), data_size - bytes_written, stream);
-		bytes_written += bytes;
-		char_data += bytes;
+		while (bytes_written < data_size)
+		{
+			bytes = fwrite(char_data, sizeof(char), data_size - bytes_written, stream);
+			bytes_written += bytes;
+			char_data += bytes;
+		}
+
+		fclose(stream);
+
+		ret = 0;
+	Exit:
+
+		return ret;
+
 	}
 
-	fclose(stream);
-
-	ret = 0;
-Exit:
-
-	return ret;
+	void SpinForEver(const char* pszMessage)
+	{
+		while (true)
+		{
+			printf("\r\n%s", pszMessage);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+		}
+	}
 
 }
-
-
 
 int StepsBackToBeforeLastDelimiter(char* buffer, size_t bytes_read, int16_t delimeter)
 {
@@ -222,7 +235,7 @@ int StepsBackToBeforeLastDelimiter(char* buffer, size_t bytes_read, int16_t deli
 	char delimeter_char;
 	delimeter_char = (char)delimeter;
 	char* ch = &buffer[bytes_read - 1];
-	
+
 	while (*ch != delimeter_char)
 	{
 		ch--;
@@ -244,7 +257,7 @@ int StepsBackToBeforeLastDelimiter(char* buffer, size_t bytes_read, int16_t deli
 		}
 	}
 
-	
+
 Exit:
 	return steps_back;
 }
@@ -264,7 +277,7 @@ FILE* ReadFirstFileBuffer(const char* file_name, char* buffer, uint32_t* buffer_
 	size_t bytes_read;
 	size_t read_size;
 	char* char_data;
-	
+
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
 	errno_t err;
@@ -302,7 +315,7 @@ FILE* ReadFirstFileBuffer(const char* file_name, char* buffer, uint32_t* buffer_
 		read_size -= bytes;
 	}
 
-	if (delimeter >= 0 )
+	if (delimeter >= 0)
 	{
 		int steps_back;
 		steps_back = StepsBackToBeforeLastDelimiter(buffer, bytes_read, delimeter);
@@ -350,7 +363,7 @@ int ReadNextBuffer(FILE* stream, char* buffer, uint32_t* buffer_size, int16_t de
 			else
 			{
 				ret = 1;
-			}		
+			}
 			goto Exit;
 		}
 		bytes_read += bytes;
@@ -367,23 +380,11 @@ int ReadNextBuffer(FILE* stream, char* buffer, uint32_t* buffer_size, int16_t de
 	}
 
 	ret = 0;
-	
+
 Exit:
 	*buffer_size = (uint32_t)bytes_read;
 	return ret;
 }
-
-
-void SpinForEver(const char* pszMessage)
-{
-	while (true)
-	{
-		printf("\r\n%s", pszMessage);
-		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-	}
-}
-
-
 
 
 
@@ -451,7 +452,7 @@ Dtype** GetRegexMatches(char** file_names, uint32_t num_files, uint32_t* num_mat
 					}
 
 					wcstombs((char*)regex_chunk, it->str().c_str(), sizeof(regex_chunk));
-					
+
 					merged_len = MAX_REGEX_MATCH_LEN;
 					len = strlen(regex_chunk);
 
@@ -462,9 +463,9 @@ Dtype** GetRegexMatches(char** file_names, uint32_t num_files, uint32_t* num_mat
 					}
 
 					regex_matches[total_matches] = new Dtype[len + 1];
-					
+
 					regex_matches[total_matches][0] = static_cast<Dtype>(len); // since these are no longer C strings, need to save the length
-					
+
 					for (int j = 0; j < len; j++)
 					{
 						regex_matches[total_matches][j + 1] = (Dtype)(unsigned char)regex_chunk[j];
@@ -511,7 +512,7 @@ void PrintETA(double nseconds_latest_iteration, uint32_t remaining_iterations)
 	uint32_t secondsout = totalseconds - daysout * day - hoursout * hour - minutesout * minute;
 
 	printf("duration: %f sec | eta: %02d:%02d:%02d:%02d\n", nseconds_latest_iteration, daysout, hoursout, minutesout, secondsout);
-	
+
 }
 
 
@@ -641,7 +642,7 @@ void TestTokenizer()
 	unsigned int w_buffer_len = 10000;
 	wchar_t* w_buffer = new wchar_t[w_buffer_len];
 	Decode(encoded_text, encoded_text_len, w_buffer, &w_buffer_len, vocabulary);
-	
+
 }
 
 int SetLocale_threadproc(void* params, int block_index, int total_blocks)
