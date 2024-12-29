@@ -1,6 +1,6 @@
 
 #define MAX_REGEX_MATCH_LEN 1500 // i.e. the length of longest 'word'
-#define MAX_TO_FILE_CHUNK_LEN 10000 // some training files are too big to fit in memory so this is the streaming buffer size
+#define MAX_TO_FILE_CHUNK_LEN 1000000 // some training files are too big to fit in memory so this is the streaming buffer size
 
 struct pair_hash
 {
@@ -34,13 +34,16 @@ void TestTokenizer();
 int SetLocale_threadproc(void* params, int block_index, int total_blocks);
 
 template<typename Dtype> Dtype** GetRegexMatches(char** file_names, uint32_t num_files, uint32_t* num_matches);
+template<typename Dtype> Dtype** GetRegexMatches2(char** file_names, uint32_t num_files, uint64_t* num_matches);
 template<typename Dtype> int SaveTokenizer(const char* tokenizer_file_name, std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& merges);
 template<typename T>T getMaxValue(T** ptr);
-
+//int GetRegexMatches2_threadproc(void* params, int block_index, int total_blocks);
+template<typename Dtype> int GetRegexMatches2_threadproc(void* params, int block_index, int total_blocks);
 
 int Encode(const char* text, unsigned int* encoded_text, unsigned int* encoded_text_len, std::unordered_map<std::pair<uint32_t, uint32_t>, uint32_t, pair_hash>& merges);
+int Encode(const char* text, unsigned int* encoded_text, unsigned int* encoded_text_len, wchar_t* w_scratch_buffer, uint32_t w_scratch_buffer_len, std::unordered_map<std::pair<uint32_t, uint32_t>, uint32_t, pair_hash>& merges); // faster version with scratch buffer (i.e. no dynamic allocation)
 int Decode(unsigned int* encoded_text, unsigned int encoded_text_len, wchar_t* decoded_text, unsigned int* decoded_text_len, std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>>&vocabulary);
-
+int GenerateVersionedFilename(const char* basePath, char* versioned_file_name, int buffer_size);
 
 struct tokenizer_struct
 {
@@ -53,3 +56,16 @@ struct tokenizer_struct
 		vocabulary.clear();
 	}
 };
+
+
+
+template<typename Dtype>
+struct GetRegexMatches2Params
+{
+	char** file_names;
+	uint32_t num_files;
+	Dtype*** regex_matches;
+	uint64_t* num_regex_matches;
+};
+
+

@@ -6,19 +6,21 @@
 #include <regex>
 #include <set>
 #include <iostream>
+#include <sstream>
 #include <assert.h>
 #include <filesystem>
 #include <stdlib.h>
 #include <clocale>
 #include <thread>
 
+#include "csvparser.h"
 #include "utils.h"
 
 using namespace bootpin_tokenizer;
 
 namespace bootpin_tokenizer {
 
-	static void* BlockRealloc(void* current_block_ptr, uint64_t current_size, uint64_t new_size)
+	void* BlockRealloc(void* current_block_ptr, uint64_t current_size, uint64_t new_size)
 	{
 		unsigned char* reallocated_block_ptr;
 
@@ -498,6 +500,242 @@ Dtype** GetRegexMatches(char** file_names, uint32_t num_files, uint32_t* num_mat
 	return regex_matches;
 }
 
+
+template uint16_t** GetRegexMatches2(char** file_names, uint32_t num_files, uint64_t* num_matches);
+template<typename Dtype>
+Dtype** GetRegexMatches2(char** file_names, uint32_t num_files, uint64_t* num_matches)
+{
+	uint64_t i;
+	char* buffer;
+	char* scratch_1;
+	char* scratch_2;
+	wchar_t* w_buffer;
+	size_t len;
+	uint64_t total_matches;
+	uint32_t buffer_size;
+	int32_t bytes_read;
+	Dtype** regex_matches = nullptr;
+	char regex_chunk[MAX_REGEX_MATCH_LEN];
+	unsigned int merged_len;
+	CSVReader csv_reader;
+	const int block_allocate_stride = 1000000;
+	bool initRet;
+
+	std::wregex word_pattern(LR"(( ?)(\w+|[`~!@#$%^&*\(\)-_=+,<.>/?;:'\"\[{\]}\\|]|[^\u0000-\u007F]))"); //https://stackoverflow.com/questions/150033/regular-expression-to-match-non-ascii-characters
+	//std::wregex word_pattern(LR"(('s|'t|'re|'ve|'m|'ll|'d)|[^\r\nA-Za-z0-9]?[A-Za-z]+|[0-9]{1,3}| ?[^\sA-Za-z0-9]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)");  // comes from minicpm-v tokenizer json file
+
+	buffer = new char[MAX_TO_FILE_CHUNK_LEN + 2];
+	scratch_1 = new char[MAX_TO_FILE_CHUNK_LEN + 2];
+	scratch_2 = new char[MAX_TO_FILE_CHUNK_LEN + 2];
+
+	w_buffer = new wchar_t[MAX_TO_FILE_CHUNK_LEN + 2];
+
+	printf("Running regex on training set...\n");
+
+	total_matches = 0;
+
+	for (i = 0; i < num_files; i++)
+	{
+		buffer_size = MAX_TO_FILE_CHUNK_LEN - 2;
+		initRet = csv_reader.Init(file_names[i], "text");
+		if (!initRet)
+		{
+			SpinForEver("Error opening CSV file");
+
+		}
+
+		bytes_read = csv_reader.ReadNextRecord(buffer, buffer_size, scratch_1, buffer_size, scratch_2, buffer_size);
+
+		while (true)
+		{	
+			if (bytes_read <= 0)
+			{
+				if (bytes_read < 0)
+				{
+					char message[100];
+					sprintf_s(message, sizeof(message), "Error reading %s ", file_names[i]);
+					SpinForEver(message);
+				}
+				break;
+			}
+
+			buffer_size = (uint32_t)bytes_read;
+
+			buffer[buffer_size] = '\0';
+			buffer[buffer_size + 1] = '\0';
+			buffer_size += 2;
+
+
+			len = strlen(buffer);
+
+			len = mbstowcs(w_buffer, buffer, len + 1);
+			if (static_cast<std::size_t> (-1) == len)
+			{
+				SpinForEver("Error converting string:\n");
+			}
+			else
+			{
+				std::wstring text(w_buffer);
+
+				std::wsregex_iterator end;
+				std::wsregex_iterator it(text.begin(), text.end(), word_pattern);
+
+
+				while (it != end)
+				{
+					if (!(total_matches % block_allocate_stride))
+					{
+						regex_matches = (Dtype**)BlockRealloc(regex_matches, sizeof(Dtype*) * (total_matches), sizeof(Dtype*) * (total_matches + block_allocate_stride));
+					}
+
+					len = wcstombs((char*)regex_chunk, it->str().c_str(), sizeof(regex_chunk));
+					if (static_cast<std::size_t> (-1) == len)
+					{
+						it++;
+						continue;
+					}
+
+					//std::wcout << it->str().c_str() << "\n";
+					if (len > 50)
+					{
+						printf("Crazy long match: ");
+						std::wcout << it->str().c_str() << "\n";
+						it++;
+						continue;
+					}
+
+
+					if (len == MAX_REGEX_MATCH_LEN)
+					{
+						std::wcout << it->str().c_str() << " <- barf\n";
+						SpinForEver("wcstombs buffer may be too small\n");
+					}
+
+					merged_len = MAX_REGEX_MATCH_LEN;
+					len = strlen(regex_chunk);
+					if (len > sizeof(regex_chunk))
+					{
+						SpinForEver("Something went wrong with wcstombs!\n");
+					}
+
+					regex_matches[total_matches] = new Dtype[len + 1];
+
+					regex_matches[total_matches][0] = static_cast<Dtype>(len); // since these are no longer C strings, need to save the length
+
+					for (int j = 0; j < len; j++)
+					{
+						regex_matches[total_matches][j + 1] = (Dtype)(unsigned char)regex_chunk[j];
+					}
+
+					total_matches++;
+					it++;
+				}
+			}
+
+			buffer_size = MAX_TO_FILE_CHUNK_LEN - 2;
+			bytes_read = csv_reader.ReadNextRecord(buffer, buffer_size, scratch_1, buffer_size, scratch_2, buffer_size);
+		}
+	}
+
+	std::cout << "Total matches: " << total_matches << "\n";
+	delete w_buffer;
+	delete buffer;
+	delete scratch_1;
+	delete scratch_2;
+
+	*num_matches = total_matches;
+	return regex_matches;
+}
+
+#include <windows.h>
+
+template int GetRegexMatches2_threadproc<uint16_t>(void*, int, int);
+template<typename Dtype>
+int GetRegexMatches2_threadproc(void* params, int block_index, int total_blocks)
+{
+	GetRegexMatches2Params<Dtype>* grmp;
+	char** file_names;
+	uint32_t num_files;
+	int i;
+
+	grmp = (GetRegexMatches2Params<Dtype>*)params;
+
+	file_names = new char*[grmp->num_files]; // over allocate, we actually need less space
+
+	num_files = 0;
+	for (i = block_index; i < grmp->num_files; i += total_blocks)
+	{
+		file_names[num_files] = grmp->file_names[i];
+		num_files++;
+	}
+
+	if (num_files)
+	{
+		grmp->regex_matches[block_index] = GetRegexMatches2<Dtype>(file_names, num_files, &grmp->num_regex_matches[block_index]);
+	}
+	else
+	{
+		grmp->num_regex_matches[block_index] = 0;
+	}
+	
+	delete file_names;
+
+	return 0;
+}
+
+
+int getFieldIndex(const std::string& csvString, const char* field_name)
+{
+	std::stringstream ss(csvString);
+	std::string field;
+	int index = 0;
+
+	// Split the string by commas
+	while (std::getline(ss, field, ','))
+	{
+		// Check if the field matches record_name
+		if (field == field_name)
+		{
+			return index; // Return the index of field_name
+		}
+		++index;
+	}
+
+	// Return -1 if field_name is not found
+	return -1;
+}
+
+
+std::vector<std::string> parseCSVLine(const std::string& line)
+{
+	std::vector<std::string> fields;
+	std::stringstream ss(line);
+	std::string field;
+	bool insideQuotes = false;
+	char c;
+
+	while (ss.get(c))
+	{
+		if (c == '"')
+		{
+			insideQuotes = !insideQuotes;  // Toggle quote state
+		}
+		else if (c == ',' && !insideQuotes)
+		{
+			fields.push_back(field);  // Add field
+			field.clear();            // Reset field
+		}
+		else
+		{
+			field += c;  // Add character to the current field
+		}
+	}
+	fields.push_back(field);  // Add the last field
+	return fields;
+}
+
+
+
 void PrintETA(double nseconds_latest_iteration, uint32_t remaining_iterations)
 {
 	uint32_t day = 86400;
@@ -680,3 +918,54 @@ char** GetTrainingFileNames(const char* training_set_folder, uint32_t* num_files
 	return file_names;
 }
 
+
+int GenerateVersionedFilename(const char* basePath, char* versioned_file_name, int buffer_size) 
+{
+	// Get the current time
+	std::time_t now = std::time(nullptr);
+	std::tm localTime;
+#ifdef _WIN32
+	localtime_s(&localTime, &now); // Thread-safe on Windows
+#else
+	localtime_r(&now, &localTime); // Thread-safe on POSIX systems
+#endif
+
+	// Create a timestamp in the format MM_DD_YYYY_HH_MM
+	std::ostringstream timestamp;
+	timestamp << (localTime.tm_mon + 1) << "_"  // Month (0-11, so add 1)
+		<< localTime.tm_mday << "_"      // Day of the month
+		<< (localTime.tm_year + 1900) << "_"  // Year since 1900
+		<< localTime.tm_hour << "_"      // Hour (0-23)
+		<< localTime.tm_min;             // Minute (0-59)
+
+// Convert basePath to std::string for manipulation
+	std::string basePathStr = basePath;
+
+	// Find the position of the last '.' to locate the file extension
+	size_t dotPos = basePathStr.find_last_of(".");
+
+	// Generate the versioned filename
+	std::string versionedFilename;
+	if (dotPos != std::string::npos) 
+	{
+		// Insert timestamp before the file extension
+		versionedFilename = basePathStr.substr(0, dotPos) + "_" + timestamp.str() + basePathStr.substr(dotPos);
+	}
+	else 
+	{
+		// No file extension, just append the timestamp
+		versionedFilename = basePathStr + "_" + timestamp.str();
+	}
+
+	if (buffer_size > strlen(versionedFilename.c_str()))
+	{
+		strcpy_s(versioned_file_name, buffer_size, versionedFilename.c_str());
+	}
+	else
+	{
+		return -1;
+	}
+	
+
+	return 0;
+}

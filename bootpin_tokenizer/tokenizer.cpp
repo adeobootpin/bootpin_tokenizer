@@ -48,8 +48,8 @@ int ApplyMerges(const char* regex_chunk, unsigned int* merged_chunk, unsigned in
 
 	if (*merged_chunk_len < len) // a bit conservative but protects against the worst case when there are no merges
 	{
-		SpinForEver("*merged_chunk_len < len check failed\n");
-		assert(0);
+		//SpinForEver("*merged_chunk_len < len check failed\n");
+		//assert(0);
 		return -1;
 	}
 
@@ -170,7 +170,9 @@ int Encode(const char* text, unsigned int* encoded_text, unsigned int* encoded_t
 		ret_t = wcstombs((char*)regex_chunk, it->str().c_str(), sizeof(regex_chunk));
 		if (ret_t == sizeof(regex_chunk))
 		{
-			SpinForEver("Buffer too small for wcstombs\n");
+			ret = -1;
+			break;
+			//SpinForEver("Buffer too small for wcstombs\n");
 		}
 		if (ret_t == (size_t)-1)
 		{
@@ -183,7 +185,8 @@ int Encode(const char* text, unsigned int* encoded_text, unsigned int* encoded_t
 		ret = ApplyMerges(regex_chunk, encode_index, &buffer_len, merges);
 		if (ret)
 		{
-			SpinForEver("ApplyMerges failed!\n");
+			//SpinForEver("ApplyMerges failed!\n");
+			break;
 		}
 		encode_buffer_len -= buffer_len;
 		encode_index += buffer_len;
@@ -198,6 +201,88 @@ int Encode(const char* text, unsigned int* encoded_text, unsigned int* encoded_t
 	return ret;
 }
 
+
+
+// faster version with scratch buffer (i.e. no dynamic allocation)
+int Encode(const char* text, unsigned int* encoded_text, unsigned int* encoded_text_len, wchar_t* w_scratch_buffer, uint32_t w_scratch_buffer_len, std::unordered_map<std::pair<uint32_t, uint32_t>, uint32_t, pair_hash>& merges)
+{
+	size_t len;
+	unsigned int buffer_len;
+	unsigned int* encode_index;
+	unsigned int encode_buffer_len;
+	char regex_chunk[MAX_REGEX_MATCH_LEN];
+	int ret = 0;
+	size_t ret_t;
+
+	if (!std::setlocale(LC_ALL, "en_US.UTF-8"))
+	{
+		printf("Failed to set UTF-8 locale\n");
+		assert(0);
+		return -1;
+	}
+
+	std::wregex word_pattern(LR"(( ?)(\w+|[`~!@#$%^&*\(\)-_=+,<.>/?;:'\"\[{\]}\\|]|[^\u0000-\u007F]))"); //https://stackoverflow.com/questions/150033/regular-expression-to-match-non-ascii-characters
+
+	len = strlen(text) + 1;
+
+	if (len > w_scratch_buffer_len)
+	{
+		return -1;
+	}
+
+	len = mbstowcs(w_scratch_buffer, text, w_scratch_buffer_len);
+
+	std::wstring w_text(w_scratch_buffer);
+
+	std::wsregex_iterator end;
+	std::wsregex_iterator it(w_text.begin(), w_text.end(), word_pattern);
+
+	encode_index = encoded_text;
+	encode_buffer_len = *encoded_text_len;
+
+	while (it != end)
+	{
+		auto dodo = it->str();
+		const wchar_t* debug = it->str().c_str();
+		//std::wcout << it->str() << std::endl;
+		ret_t = wcstombs((char*)regex_chunk, it->str().c_str(), sizeof(regex_chunk));
+		if (ret_t == sizeof(regex_chunk))
+		{
+			ret = -1;
+			break;
+			//SpinForEver("Buffer too small for wcstombs\n");
+		}
+		if (ret_t == (size_t)-1)
+		{
+			ret = -1;
+			break;
+			//SpinForEver("wcstombs failed!\n");
+		}
+
+		buffer_len = encode_buffer_len;
+		ret = ApplyMerges(regex_chunk, encode_index, &buffer_len, merges);
+		if (ret)
+		{
+			//SpinForEver("ApplyMerges failed!\n");
+			break;
+		}
+
+		if (buffer_len > encode_buffer_len)
+		{
+			SpinForEver("Encode buffer is too small"); // this should never happen, ApplyMerges should have failed, just extra sanity check
+		}
+
+		encode_buffer_len -= buffer_len;
+		encode_index += buffer_len;
+
+		++it;
+	}
+
+	*encoded_text_len = *encoded_text_len - encode_buffer_len;
+
+
+	return ret;
+}
 
 
 int Decode(unsigned int* encoded_text, unsigned int encoded_text_len, wchar_t* decoded_text, unsigned int* decoded_text_len, std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>>&vocabulary)
@@ -278,12 +363,12 @@ int Decode(unsigned int* encoded_text, unsigned int encoded_text_len, wchar_t* d
 
 // update tally table, return mode token pair
 template<typename Dtype>
-int UpdateTally(Dtype* merged_chunk, std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& tally, Dtype* mode_token1, Dtype* mode_token2, Dtype* frequency)
+int UpdateTally(Dtype* merged_chunk, std::unordered_map<std::pair<Dtype, Dtype>, uint64_t, pair_hash>& tally, Dtype* mode_token1, Dtype* mode_token2, uint64_t* frequency)
 {
 	unsigned int len;
 	unsigned int i;
-	Dtype max_count;
-	Dtype new_count;
+	uint64_t max_count;
+	uint64_t new_count;
 
 	if (!tally.size())
 	{
@@ -304,6 +389,7 @@ int UpdateTally(Dtype* merged_chunk, std::unordered_map<std::pair<Dtype, Dtype>,
 		}
 	}
 
+	*frequency = 0;
 
 	len = merged_chunk[0]; // string length is in location 0
 
@@ -336,7 +422,7 @@ int UpdateTally(Dtype* merged_chunk, std::unordered_map<std::pair<Dtype, Dtype>,
 
 
 template<typename Dtype>
-int UpdateMerges(std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& merges, Dtype mode_token1, Dtype mode_token2, Dtype* new_token, Dtype frequency)
+int UpdateMerges(std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& merges, Dtype mode_token1, Dtype mode_token2, Dtype* new_token, uint64_t frequency)
 {
 	unsigned int new_token_id;
 
@@ -344,6 +430,11 @@ int UpdateMerges(std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& 
 	merges[std::make_pair(mode_token1, mode_token2)] = new_token_id;
 
 	*new_token = new_token_id;
+
+	if (frequency)
+	{
+		//SpinForEver("Frequency = 0, is that a deal breaker?");
+	}
 
 	// note all lines below just for debugging and can be removed
 	// frequency also only for debugging
@@ -428,28 +519,28 @@ template<typename Dtype>
 struct BytePairEncodeParams
 {
 	Dtype** regex_matches;
-	uint32_t num_regex_matches;
+	uint64_t num_regex_matches;
 	std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>* merges;
-	std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>* tally;
+	std::unordered_map<std::pair<Dtype, Dtype>, uint64_t, pair_hash>* tally;
 	Dtype mode_token1;
 	Dtype mode_token2;
 	Dtype new_token;
-	Dtype frequency;
+	uint64_t frequency;
 };
 
 
 template<typename Dtype>
 int UpdateTally_threadproc(void* params, int block_index, int total_blocks)
 {
-	int i;
+	uint64_t i;
 	BytePairEncodeParams<Dtype>* bp;
-	std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash> local_tally;
+	std::unordered_map<std::pair<Dtype, Dtype>, uint64_t, pair_hash> local_tally;
 	bp = (BytePairEncodeParams<Dtype>*)params;
 	Dtype mode_token1;
 	Dtype mode_token2;
-	Dtype frequency;
+	uint64_t frequency;
 
-	for (i = block_index; i < (int)bp->num_regex_matches; i += total_blocks)
+	for (i = block_index; i < bp->num_regex_matches; i += total_blocks)
 	{
 		UpdateTally(bp->regex_matches[i], local_tally, &mode_token1, &mode_token2, &frequency); // out parameter not used here (only used in single threaded mode)
 	}
@@ -505,15 +596,15 @@ int ApplyMerge_threadproc(void* params, int block_index, int total_blocks)
 }
 
 template<typename Dtype>
-int BytePairEncode(Dtype** regex_matches, uint32_t num_regex_matches, std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& merges, std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& tally, ThreadPool* threadpool = nullptr)
+int BytePairEncode(Dtype** regex_matches, uint64_t num_regex_matches, std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash>& merges, std::unordered_map<std::pair<Dtype, Dtype>, uint64_t, pair_hash>& tally, ThreadPool* threadpool = nullptr)
 {
-	uint32_t i;
+	uint64_t i;
 	int* threadpool_ret;
 	BytePairEncodeParams<Dtype> bp;
 	Dtype mode_token1;
 	Dtype mode_token2;
 	Dtype new_token;
-	Dtype frequency;
+	uint64_t frequency;
 
 	//threadpool = nullptr;
 
@@ -566,21 +657,21 @@ int BytePairEncode(Dtype** regex_matches, uint32_t num_regex_matches, std::unord
 	return 0;
 }
 
-
-// Note: at training time, Dtype can be uint16_t (to fit in memory) or uint32_t (to support larger vocabulary sizes)
-// at run time data type is uint32_t
 template<typename Dtype>
 int Train()
 {
-	Dtype** regex_matches = nullptr; // setting Dtype to uint16_t means vocabaular size cannot be larger than 65535, use uint32_t if larger vocabaular size is required (see getMaxValue function)
+	Dtype** regex_matches = nullptr; // this means vocabaular size cannot be larger than 65535, use uint32_t** if larger vocabaular size is required (see getMaxValue function)
 	char** file_names;
 	uint32_t num_files;
 	uint32_t target_vocab_size;
 	uint32_t vocab_size;
-	uint32_t num_matches;
+	//uint32_t num_matches;
+	uint64_t num_matches;
+	int* threadpool_ret;
 
 	char file_path[250];
-	const char* training_set_folder = "c:\\xfer\\tiny\\";
+	const char* training_set_folder = "c:\\xfer\\smollm_training\\";
+
 
 
 	std::chrono::steady_clock::time_point clock_begin;
@@ -598,18 +689,16 @@ int Train()
 	}
 
 	//TestFileStreaming();
-	TestTokenizer(); return 0;
+	//TestTokenizer(); return 0;
 
 
 
 	std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash> merges;
-	std::unordered_map<std::pair<Dtype, Dtype>, Dtype, pair_hash> tally;
+	std::unordered_map<std::pair<Dtype, Dtype>, uint64_t, pair_hash> tally;
 	std::unordered_map<Dtype, std::pair<Dtype, Dtype>> vocabulary;
 
-	file_names = GetTrainingFileNames(training_set_folder, &num_files);
-	regex_matches = GetRegexMatches<uint16_t>(file_names, num_files, &num_matches);
-
-	tally.reserve(10000);
+	target_vocab_size = 48893;
+	tally.reserve(target_vocab_size);
 
 	InitializeCriticalSection(&cs_tally);
 	threadpool = new ThreadPool;
@@ -620,7 +709,6 @@ int Train()
 
 		threadpool->Execute(SetLocale_threadproc, nullptr, threadpool->get_thread_count());
 
-		int* threadpool_ret;
 		threadpool->WaitForTaskCompletion(&threadpool_ret);
 		for (int j = 0; j < threadpool->get_thread_count(); j++)
 		{
@@ -632,8 +720,41 @@ int Train()
 		}
 	}
 
-	nseconds_avg = 0;
-	target_vocab_size = 10000;
+
+	file_names = GetTrainingFileNames(training_set_folder, &num_files);
+	//regex_matches = GetRegexMatches<uint16_t>(file_names, num_files, &num_matches);
+	//regex_matches = GetRegexMatches2<uint16_t>(file_names, num_files, &num_matches); // uses new CSVReader class (recommended)
+
+
+	GetRegexMatches2Params<Dtype> grmp;
+	grmp.regex_matches = new Dtype**[threadpool->get_thread_count()];
+	grmp.num_regex_matches = new uint64_t[threadpool->get_thread_count()];
+	grmp.file_names = file_names;
+	grmp.num_files = num_files;
+
+	threadpool->Execute(GetRegexMatches2_threadproc<Dtype>, &grmp, threadpool->get_thread_count());
+	threadpool->WaitForTaskCompletion(&threadpool_ret);
+
+
+	num_matches = grmp.num_regex_matches[0];
+	regex_matches = grmp.regex_matches[0];
+
+	for (int i = 1; i < threadpool->get_thread_count(); i++) // now merge all the regex matches
+	{
+		if (grmp.num_regex_matches[i])
+		{
+			regex_matches = (Dtype**)BlockRealloc(regex_matches, sizeof(Dtype*) * (num_matches), sizeof(Dtype*) * (num_matches + grmp.num_regex_matches[i]));
+			for (int j = 0; j < grmp.num_regex_matches[i]; j++)
+			{
+				regex_matches[num_matches + j] = grmp.regex_matches[i][j];
+			}
+			num_matches += grmp.num_regex_matches[i];
+			delete grmp.regex_matches[i];
+		}		
+	}
+
+
+	nseconds_avg = 0;	
 
 	if (target_vocab_size > getMaxValue(regex_matches))
 	{
@@ -649,7 +770,7 @@ int Train()
 		printf("round: %d\n", vocab_size);
 		tally.clear();
 
-		if (!((vocab_size + 1) % 100))
+		if (!((vocab_size + 1) % 1000))
 		{
 			sprintf_s(file_path, sizeof(file_path), "c:\\src\\bootpin_tokenizer\\data\\tokenizer_%d.bin", vocab_size + 1);
 			SaveTokenizer(file_path, merges);
@@ -665,7 +786,10 @@ int Train()
 	}
 
 
-	SaveTokenizer("f:\\src\\bootpin_tokenizer\\data\\tokenizer.bin", merges);
+	GenerateVersionedFilename("c:\\src\\bootpin_tokenizer\\data\\smollm_tokenizer.bin", file_path, sizeof(file_path));
+
+	//SaveTokenizer("f:\\src\\bootpin_tokenizer\\data\\tokenizer.bin", merges);
+	SaveTokenizer(file_path, merges);
 
 	return 0;
 }
@@ -713,7 +837,7 @@ void* InitializeTokenizer(const char* file_name)
 
 	for (i = 0; i < size; i++)
 	{
-		if( (buffer[idx] >= size + MERGE_OFFSET) || (buffer[idx + 1] >= size + MERGE_OFFSET) || (buffer[idx + 2] >= size + MERGE_OFFSET) )
+		if ((buffer[idx] >= size + MERGE_OFFSET) || (buffer[idx + 1] >= size + MERGE_OFFSET) || (buffer[idx + 2] >= size + MERGE_OFFSET))
 		{
 			printf("Invalid tokens!\n");
 			assert(0);
@@ -754,6 +878,17 @@ int Encode(void* tokenizer, const char* text, unsigned int* encoded_text, unsign
 }
 
 
+int Encode(void* tokenizer, const char* text, unsigned int* encoded_text, unsigned int* encoded_text_len, wchar_t* w_scratch_buffer, unsigned int w_scratch_buffer_len) // faster version with scratch buffer (i.e. no dynamic allocation)
+{
+	tokenizer_struct* tok;
+
+	tok = (tokenizer_struct*)tokenizer;
+
+	return Encode(text, encoded_text, encoded_text_len, w_scratch_buffer, w_scratch_buffer_len, tok->merges);
+
+}
+
+
 int Decode(void* tokenizer, unsigned int* encoded_text, unsigned int encoded_text_len, wchar_t* decoded_text, unsigned int* decoded_text_len)
 {
 	tokenizer_struct* tok;
@@ -773,4 +908,9 @@ unsigned int GetVocabularySize(void* tokenizer)
 
 	return MERGE_OFFSET + (unsigned int)tok->vocabulary.size();
 
+}
+
+int Train()
+{
+	return Train<uint16_t>();
 }
