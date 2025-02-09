@@ -1,4 +1,4 @@
-
+//Note: this version has been deprecated. Use version in libtorch_smollm!
 class CSVReader
 {
 public:
@@ -88,12 +88,13 @@ public:
 
 		while (fgets(scratch, scratch_size, stream_))
 		{
+                        /*
 			if (count_ == 30000)
 			{
 				fclose(stream_);
 				stream_ = nullptr;
 				return 0;
-			}
+			}*/
 
 			len = (uint32_t)strlen(scratch);
 

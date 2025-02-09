@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <clocale>
 #include <thread>
+#include <unordered_map>
 
 #include "csvparser.h"
 #include "utils.h"
@@ -267,7 +268,7 @@ Exit:
 
 // read up to buffer_size bytes into the buffer
 // stop before first instance of delimiter a the end of buffer
-// e.g. read up till just before the last ' ' ( single space) or just befor the first of a sequence of spaces '   '
+// e.g. read up till just before the last ' ' ( single space) or just before the first of a sequence of spaces '   '
 // 'Hello Beryl!' 
 // 'Hello   Beryl!' 
 // stop at 'o' in both cases
@@ -918,8 +919,7 @@ char** GetTrainingFileNames(const char* training_set_folder, uint32_t* num_files
 	return file_names;
 }
 
-
-int GenerateVersionedFilename(const char* basePath, char* versioned_file_name, int buffer_size) 
+int GenerateVersionedFilename(const char* basePath, char* versioned_file_name, int buffer_size)
 {
 	// Get the current time
 	std::time_t now = std::time(nullptr);
@@ -946,12 +946,12 @@ int GenerateVersionedFilename(const char* basePath, char* versioned_file_name, i
 
 	// Generate the versioned filename
 	std::string versionedFilename;
-	if (dotPos != std::string::npos) 
+	if (dotPos != std::string::npos)
 	{
 		// Insert timestamp before the file extension
 		versionedFilename = basePathStr.substr(0, dotPos) + "_" + timestamp.str() + basePathStr.substr(dotPos);
 	}
-	else 
+	else
 	{
 		// No file extension, just append the timestamp
 		versionedFilename = basePathStr + "_" + timestamp.str();
@@ -965,7 +965,7 @@ int GenerateVersionedFilename(const char* basePath, char* versioned_file_name, i
 	{
 		return -1;
 	}
-	
+
 
 	return 0;
 }
